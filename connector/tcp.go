@@ -2,49 +2,56 @@ package connector
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"net"
 )
 
 // TCPConnector struct
 type TCPConnector struct {
+	onNewClientConnectionCB func(c Client)
+	onClientDisconnectCB    func(c Client, err error)
 }
 
-// TCPClient interface
+// TCPClient struct
 type TCPClient struct {
 	conn     net.Conn
 	server   *TCPConnector
+	reader   *bufio.Reader
 	socketID string
 }
 
-func (c *TCPClient) handleMessages() {
-	reader := bufio.NewReader(c.conn)
-	for {
-		message, err := reader.ReadBytes('\n')
-		if err != nil {
-			c.conn.Close()
-			c.server.onClientDisconnect(c)
-			return
-		}
-		c.server.onMessage(c, message)
+// NewTCPClient ctor
+func NewTCPClient(conn net.Conn, server *TCPConnector) *TCPClient {
+	return &TCPClient{
+		conn:   conn,
+		server: server,
+		reader: bufio.NewReader(conn),
 	}
+}
+
+// Close closes the tcpclient
+func (c *TCPClient) Close() {
+	c.conn.Close()
+	c.server.onClientDisconnectCB(c, errors.New("connection closed"))
+}
+
+// Send sends a message to the socket
+func (c *TCPClient) Read() ([]byte, error) {
+	reader := c.reader
+	message, err := reader.ReadBytes('\n')
+	return message, err
+}
+
+// Send sends a message to the socket
+func (c *TCPClient) Send(data []byte) error {
+	_, err := c.conn.Write(data)
+	return err
 }
 
 // NewTCPConnector ctor
 func NewTCPConnector() *TCPConnector {
 	return &TCPConnector{}
-}
-
-func (t *TCPConnector) onClientDisconnect(c *TCPClient) {
-	fmt.Printf("connection closed: %s\n", c.socketID)
-}
-
-func (t *TCPConnector) onMessage(c *TCPClient, m []byte) {
-	fmt.Printf("new message from client %s: %s\n", c.socketID, string(m))
-}
-
-func (t *TCPConnector) onNewClient(c *TCPClient) {
-	fmt.Printf("new client connection: %s\n", c.socketID)
 }
 
 // Listen listens
@@ -56,12 +63,17 @@ func (t *TCPConnector) Listen(host string, port int) error {
 	defer listener.Close()
 	for {
 		conn, _ := listener.Accept()
-		client := &TCPClient{
-			conn:     conn,
-			socketID: uuid.NewV4(),
-			server:   t,
-		}
-		go client.handleMessages()
-		t.onNewClient(client)
+		client := NewTCPClient(conn, t)
+		t.onNewClientConnectionCB(client)
 	}
+}
+
+// SetOnNewClientConnectionCB sets the callback for new client connections
+func (t *TCPConnector) SetOnNewClientConnectionCB(f func(c Client)) {
+	t.onNewClientConnectionCB = f
+}
+
+// SetOnClientDisconnectCB sets the callback for client disconnections
+func (t *TCPConnector) SetOnClientDisconnectCB(f func(c Client, err error)) {
+	t.onClientDisconnectCB = f
 }
